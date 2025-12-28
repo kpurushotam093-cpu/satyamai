@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Universal AI Particle System</title>
+    <style>
+        body { 
+            margin: 0; 
+            overflow: hidden; 
+            background: radial-gradient(circle at center, #0f172a 0%, #020617 100%); 
+            font-family: 'Segoe UI', system-ui, sans-serif; 
+            color: white;
+        }
+        
+        /* Interactive Overlay */
+        #overlay {
+            position: fixed; inset: 0; background: rgba(0,0,0,0.8);
+            display: flex; flex-direction: column; justify-content: center;
+            align-items: center; z-index: 1000; transition: 0.5s;
+        }
+        .card {
+            background: rgba(255,255,255,0.05); padding: 30px; border-radius: 20px;
+            backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1);
+            text-align: center; max-width: 80%;
+        }
+        #start-btn {
+            padding: 15px 40px; font-size: 18px; font-weight: bold;
+            background: #00ffcc; border: none; color: #000;
+            border-radius: 50px; cursor: pointer; margin-top: 20px;
+            box-shadow: 0 0 30px rgba(0, 255, 204, 0.3);
+        }
+
+        #video-preview {
+            position: absolute; top: 15px; right: 15px;
+            width: 120px; height: 120px; border-radius: 15px;
+            transform: scaleX(-1); border: 2px solid #00ffcc;
+            object-fit: cover; z-index: 10; display: none; /* Only shows when camera active */
+        }
+
+        .controls {
+            position: absolute; bottom: 30px; width: 100%;
+            display: flex; justify-content: center; gap: 10px; z-index: 20;
+            flex-wrap: wrap; padding: 0 10px; box-sizing: border-box;
+        }
+        .shape-btn {
+            background: rgba(255,255,255,0.1); border: 1px solid rgba(255,255,255,0.2);
+            color: white; padding: 10px 20px; border-radius: 12px; cursor: pointer;
+            font-size: 14px; transition: 0.3s;
+        }
+        .shape-btn:hover { background: #00ffcc; color: black; }
+
+        #info {
+            position: absolute; top: 20px; left: 20px; font-size: 12px;
+            opacity: 0.6; pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <div class="card">
+        <h1 style="margin:0; color:#00ffcc;">SATYAM AI</h1>
+        <p>Laptop: Use Mouse to Move & Scroll to Zoom<br>Mobile: Allow Camera for Hand Tracking</p>
+        <button id="start-btn">START EXPERIENCE</button>
+    </div>
+</div>
+
+<div id="info">PC: Mouse Move | Mobile: AI Tracking</div>
+<video id="video-preview" autoplay playsinline muted></video>
+
+<div class="controls">
+    <button class="shape-btn" onclick="setShape('sphere')">Sphere</button>
+    <button class="shape-btn" onclick="setShape('heart')">Heart</button>
+    <button class="shape-btn" onclick="setShape('flower')">Flower</button>
+    <button class="shape-btn" onclick="setShape('saturn')">Saturn</button>
+</div>
+
+<script type="importmap">
+    { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { HandLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0";
+
+    const video = document.getElementById('video-preview');
+    const startBtn = document.getElementById('start-btn');
+    const overlay = document.getElementById('overlay');
+
+    let handLandmarker;
+    let lastVideoTime = -1;
+    let isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    const PARTICLE_COUNT = isMobile ? 2000 : 5000;
+
+    // --- THREE.JS ENGINE ---
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    const renderer = new THREE.WebGLRenderer({ antialias: !isMobile, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    document.body.appendChild(renderer.domElement);
+
+    // Starry Background
+    const starGeo = new THREE.BufferGeometry();
+    const starCoords = new Float32Array(3000 * 3);
+    for(let i=0; i<3000*3; i++) starCoords[i] = (Math.random() - 0.5) * 100;
+    starGeo.setAttribute('position', new THREE.BufferAttribute(starCoords, 3));
+    scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0x444444, size: 0.05 })));
+
+    // Main Particles
+    const geo = new THREE.BufferGeometry();
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    const targets = new Float32Array(PARTICLE_COUNT * 3);
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({ 
+        size: isMobile ? 0.12 : 0.08, 
+        color: 0x00ffcc, 
+        transparent: true, 
+        blending: THREE.AdditiveBlending 
+    });
+    const points = new THREE.Points(geo, mat);
+    scene.add(points);
+    camera.position.z = 10;
+
+    // --- INTERACTION VARIABLES ---
+    let pinch = 0, hX = 0, hY = 0;
+    let mouseX = 0, mouseY = 0;
+
+    // Laptop Mouse Control
+    window.addEventListener('mousemove', (e) => {
+        if(!isMobile) {
+            mouseX = (e.clientX / window.innerWidth - 0.5) * 20;
+            mouseY = (0.5 - e.clientY / window.innerHeight) * 20;
+        }
+    });
+
+    window.addEventListener('wheel', (e) => {
+        if(!isMobile) pinch = Math.max(0, Math.min(10, pinch + e.deltaY * 0.005));
+    });
+
+    // --- AI TRACKING ---
+    async function initAI() {
+        try {
+            const vision = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0/wasm");
+            handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                baseOptions: { modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`, delegate: "GPU" },
+                runningMode: "VIDEO", numHands: 1
+            });
+            const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+            video.srcObject = stream;
+            video.style.display = 'block';
+        } catch (e) { console.log("Camera not available, using mouse mode."); }
+    }
+
+    startBtn.addEventListener('click', async () => {
+        overlay.style.opacity = '0';
+        setTimeout(() => overlay.style.display = 'none', 500);
+        await initAI();
+        animate();
+    });
+
+    // --- SHAPES ---
+    window.setShape = (type) => {
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            const i3 = i * 3;
+            if (type === 'heart') {
+                const t = Math.random() * Math.PI * 2;
+                targets[i3] = 0.25 * (16 * Math.pow(Math.sin(t), 3));
+                targets[i3+1] = 0.25 * (13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t));
+                targets[i3+2] = (Math.random() - 0.5) * 2;
+            } else if (type === 'flower') {
+                const t = (i / PARTICLE_COUNT) * Math.PI * 2;
+                const r = 5 * Math.sin(5 * t);
+                targets[i3] = r * Math.cos(t);
+                targets[i3+1] = r * Math.sin(t);
+                targets[i3+2] = Math.sin(i);
+            } else if (type === 'saturn') {
+                if (i < PARTICLE_COUNT * 0.4) {
+                    const r = Math.random() * 2;
+                    const th = Math.random() * Math.PI * 2;
+                    const ph = Math.acos(2 * Math.random() - 1);
+                    targets[i3] = r * Math.sin(ph) * Math.cos(th);
+                    targets[i3+1] = r * Math.sin(ph) * Math.sin(th);
+                    targets[i3+2] = r * Math.cos(ph);
+                } else {
+                    const r = 4 + Math.random() * 2;
+                    const th = Math.random() * Math.PI * 2;
+                    targets[i3] = r * Math.cos(th);
+                    targets[i3+1] = Math.sin(th) * 0.5;
+                    targets[i3+2] = r * Math.sin(th);
+                }
+            } else {
+                const ph = Math.acos(-1 + (2 * i) / PARTICLE_COUNT);
+                const th = Math.sqrt(PARTICLE_COUNT * Math.PI) * ph;
+                targets[i3] = 5 * Math.cos(th) * Math.sin(ph);
+                targets[i3+1] = 5 * Math.sin(th) * Math.sin(ph);
+                targets[i3+2] = 5 * Math.cos(ph);
+            }
+        }
+    };
+    setShape('sphere');
+
+    function animate() {
+        // Handle AI Tracking if camera is on
+        if (handLandmarker && video.readyState >= 2 && video.currentTime !== lastVideoTime) {
+            const res = handLandmarker.detectForVideo(video, performance.now());
+            if (res.landmarks && res.landmarks[0]) {
+                const h = res.landmarks[0];
+                pinch = Math.hypot(h[4].x - h[8].x, h[4].y - h[8].y) * 10;
+                hX = (0.5 - h[8].x) * 25;
+                hY = (0.5 - h[8].y) * 25;
+                mat.color.setHSL(h[8].x, 0.8, 0.6);
+            }
+            lastVideoTime = video.currentTime;
+        } else if (!isMobile) {
+            // PC Fallback to Mouse if no camera
+            hX += (mouseX - hX) * 0.1;
+            hY += (mouseY - hY) * 0.1;
+        }
+
+        const p = geo.attributes.position.array;
+        for (let i = 0; i < PARTICLE_COUNT * 3; i++) {
+            const axis = i % 3;
+            const off = (axis === 0) ? hX : (axis === 1) ? hY : 0;
+            p[i] += (targets[i] * (1 + pinch*0.5) + off - p[i]) * 0.1;
+        }
+        
+        geo.attributes.position.needsUpdate = true;
+        points.rotation.y += 0.003;
+        renderer.render(scene, camera);
+        requestAnimationFrame(animate);
+    }
+
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+</body>
+</html>
